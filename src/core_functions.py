@@ -1,3 +1,6 @@
+import time
+import itertools
+
 from ic_core_functions import *
 
 from typing      import Tuple
@@ -35,3 +38,25 @@ def divide_np_arrays(num : np.array, denom : np.array) -> np.array:
     ratio = np.zeros(len(denom))
     np.divide(num, denom, out=ratio, where=ok)
     return ratio
+
+def progressbar(iterable, *, flushmod=1, nelements=None, index=False):
+    if nelements is None:
+        temp, iterable = itertools.tee(iterable)
+        nelements = sum(1 for _ in temp)
+
+    dt = 0
+    t0 = t00 = time.time()
+    for i, value in enumerate(iterable):
+        if i % flushmod == 0:
+            eta = (nelements - i) * dt
+            tot = time.time() - t00
+            print(f"\rItem {i+1} of {nelements} | {dt:.2f} s/item | ETA {eta/60:.1f} min | Ellapsed {tot/60:.1f} min".ljust(100), end="", flush=True)
+        if index:
+            yield i, value
+        else:
+            yield value
+        t1  = time.time()
+        dt  = (dt*i + t1 - t0) / (i+1)
+        t0  = t1
+    print(f"\rFinished {nelements} elements in {tot/60:.1f} min | {dt:.2f} s/item".ljust(100), end="", flush=True)
+    print()
