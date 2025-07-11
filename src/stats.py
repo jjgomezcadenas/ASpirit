@@ -119,3 +119,40 @@ def gaussian_experiments_variable_mean_and_std(mexperiments : Number   = 1000,
 
 def smear_e(e : np.array, std : float)->np.array:
     return np.array([np.random.normal(x, std) for x in e])
+
+
+def compute_resolution_with_error(sigma, sigma_err, mean, mean_err, fwhm_factor=2.355, scale=100):
+    """
+    Compute the resolution (FWHM%) and its uncertainty using Gaussian parameters.
+
+    Parameters:
+        sigma : array-like
+            Standard deviation values (σ) from Gaussian fits.
+        sigma_err : array-like
+            Uncertainties on sigma.
+        mean : array-like
+            Mean values (μ) from Gaussian fits.
+        mean_err : array-like
+            Uncertainties on mean.
+        fwhm_factor : float
+            Factor to convert σ to FWHM (default: 2.355).
+        scale : float
+            Scale factor for resolution (default: 100 for percentage).
+
+    Returns:
+        resolution : np.ndarray
+            The computed resolution values: (σ / μ) × FWHM × scale
+        resolution_err : np.ndarray
+            Propagated uncertainty on resolution
+    """
+
+    resolution = (sigma / mean) * fwhm_factor * scale
+
+    # Relative errors
+    rel_err_sigma = sigma_err / sigma
+    rel_err_mean = mean_err / mean
+
+    # Propagate error using derivative formula
+    resolution_err = resolution * np.sqrt(rel_err_sigma**2 + rel_err_mean**2)
+
+    return resolution, resolution_err

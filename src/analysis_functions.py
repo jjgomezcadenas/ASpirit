@@ -10,6 +10,7 @@ import warnings
 from typing import Callable, Union , Optional 
 from typing import Tuple, List
 from dataclasses import dataclass, field 
+from scipy.optimize import curve_fit
 
 from stats import mean_and_std, in_range, poisson_sigma
 
@@ -807,7 +808,7 @@ def fit_Epes_vs_R(
 
 ## aux
 
-def plot_fit_energy(fc : FitCollection):
+def plot_fit_energy(fc : FitCollection, label = None):
 
     if fc.fr.valid:
         par  = fc.fr.par
@@ -825,9 +826,9 @@ def plot_fit_energy(fc : FitCollection):
                              histtype='step',
                              edgecolor='black',
                              linewidth=1.5,
-                             label=stat)
+                             label=label)
 
-        plt.plot(fc.fp.x, fc.fp.f(fc.fp.x), "r-", lw=2)
+        plt.plot(fc.fp.x, fc.fp.f(fc.fp.x), "r-",  linewidth=1.5, label=stat)
         plt.legend()
         
     else:
@@ -1129,3 +1130,144 @@ def chi2(f : FitFunction,
         Reduced chi-squared statistic of the fit.
     """
     return chi2f(f.fn, len(f.values), x, y, sy)
+
+
+def gaussian(y, A, mu, sigma):
+    return A * np.exp(-(y - mu)**2 / (2 * sigma**2))
+    
+
+
+def gaussian_profiler_y(counts, xedges, yedges, min_counts=10):
+    
+    """
+    Extracts the Gaussian mean and its uncertainty from vertical slices of a 2D histogram.
+
+    Parameters:
+    -----------
+    counts : 2D np.ndarray
+        The 2D histogram array of counts, typically from `np.histogram2d`.
+    xedges : 1D np.ndarray
+        Bin edges along the x-axis (e.g., DT).
+    yedges : 1D np.ndarray
+        Bin edges along the y-axis (e.g., Zrms).
+    min_counts : int, optional (default=10)
+        Minimum total counts required in a vertical slice for a fit to be attempted.
+
+    Returns:
+    --------
+    dt_centers : np.ndarray
+        The x-axis (DT) bin centers where a valid Gaussian fit was performed.
+    mean_values : np.ndarray
+        The Gaussian mean (μ) extracted from each vertical slice.
+    mean_errors : np.ndarray
+        The estimated statistical error on the fitted μ, derived from the fit covariance matrix..
+    sigmas : np.ndarray
+    The Gaussian width (σ) extracted from each vertical slice.
+
+    sigma_errors : np.ndarray
+    The estimated error on the fitted σ, derived from the fit covariance matrix.
+    """
+
+    # Bin centers
+    xcenters = (xedges[:-1] + xedges[1:]) / 2
+    ycenters = (yedges[:-1] + yedges[1:]) / 2
+
+    mean_values = []
+    mean_errors = []
+    sigma_vals = []
+    sigma_errors = []
+    dt_centers = []
+
+    for i in range(len(xcenters)):
+        profile = counts[i, :]
+        if np.sum(profile) < min_counts or np.all(profile == 0):
+            continue
+
+        try:
+            popt, pcov = curve_fit(gaussian, ycenters, profile, p0=gauss_seed(ycenters,profile))
+            _, mu_fit, sigma_fit = popt
+            mu_err = np.sqrt(pcov[2, 2])
+            sigma_err = np.sqrt(pcov[2, 2]) 
+            
+            dt_centers.append(xcenters[i])
+            mean_values.append(mu_fit)
+            mean_errors.append(mu_err)  # error on mean
+            sigma_vals.append(sigma_fit)
+            sigma_errors.append(sigma_err)
+            
+        except RuntimeError:
+            continue
+
+    return np.array(dt_centers), np.array(mean_values), np.array(mean_errors), np.array(sigma_vals), np.array(sigma_errors) 
+
+
+
+#Reimplementation with slice numbers 
+def gaussian_profiler_y_slices(counts, xedges, yedges, slices=10, min_counts=10):
+    """
+    Fit vertical slices of a 2D histogram with Gaussians along y-axis.
+
+    Parameters:
+        counts : 2D array
+            The 2D histogram counts.
+        xedges, yedges : arrays
+            Bin edges along x and y axes.
+        slices : int or array-like
+            Number of vertical slices or explicit x bin edges.
+        min_counts : int
+            Minimum counts in a slice to attempt a fit.
+
+    Returns:
+        dt_centers, mean_values, mean_errors, sigma_vals, sigma_errors
+    """
+
+    ycenters = (yedges[:-1] + yedges[1:]) / 2
+
+    # Determine slicing
+    if isinstance(slices, int):
+        # Uniform slicing over full x-range
+        custom_xedges = np.linspace(xedges[0], xedges[-1], slices + 1)
+    else:
+        # Use custom array of bin edges
+        custom_xedges = np.asarray(slices)
+
+    dt_centers = []
+    mean_values = []
+    mean_errors = []
+    sigma_vals = []
+    sigma_errors = []
+
+    for i in range(len(custom_xedges) - 1):
+        xlow, xhigh = custom_xedges[i], custom_xedges[i + 1]
+        # Find histogram bins overlapping this range
+        xmask = (xedges[:-1] >= xlow) & (xedges[1:] <= xhigh)
+        if not np.any(xmask):
+            continue
+
+        # Average counts over selected bins along x
+        profile = np.mean(counts[xmask, :], axis=0)
+
+        if np.sum(profile) < min_counts or np.all(profile == 0):
+            continue
+
+        try:
+            popt, pcov = curve_fit(gaussian, ycenters, profile, p0=gauss_seed(ycenters, profile))
+            _, mu_fit, sigma_fit = popt
+            mu_err = np.sqrt(np.diag(pcov))[1] if pcov.shape == (3, 3) else np.nan
+            sigma_err = np.sqrt(np.diag(pcov))[2] if pcov.shape == (3, 3) else np.nan
+
+            center = 0.5 * (xlow + xhigh)
+            dt_centers.append(center)
+            mean_values.append(mu_fit)
+            mean_errors.append(mu_err)
+            sigma_vals.append(sigma_fit)
+            sigma_errors.append(sigma_err)
+            
+        except RuntimeError:
+            continue
+
+    return (np.array(dt_centers),
+            np.array(mean_values),
+            np.array(mean_errors),
+            np.array(sigma_vals),
+            np.array(sigma_errors))

@@ -11,7 +11,7 @@ color_sequence = ("k", "m", "g", "b", "r",
 
 def auto_plot_style(overrides = dict()):
     plt.rcParams[ "figure.figsize"               ] = 10, 8
-    plt.rcParams[   "font.size"                  ] = 25
+    plt.rcParams[   "font.size"                  ] = 20
     plt.rcParams[  "lines.markersize"            ] = 25
     plt.rcParams[  "lines.linewidth"             ] = 3
     plt.rcParams[  "patch.linewidth"             ] = 3
@@ -23,8 +23,8 @@ def auto_plot_style(overrides = dict()):
     plt.rcParams["savefig.bbox"                  ] = "tight"
     plt.rcParams[   "axes.formatter.use_mathtext"] = True
     plt.rcParams[   "axes.formatter.limits"      ] = (-3 ,4)
-    plt.rcParams[  "xtick.major.size"            ] = 10
-    plt.rcParams[  "ytick.major.size"            ] = 10
+    plt.rcParams[  "xtick.major.size"            ] = 8
+    plt.rcParams[  "ytick.major.size"            ] = 8
     plt.rcParams[  "xtick.minor.size"            ] = 5
     plt.rcParams[  "ytick.minor.size"            ] = 5
     plt.rcParams[   "axes.prop_cycle"            ] = cycler(color=color_sequence)
