@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from scipy.optimize import curve_fit
 
 from stats import mean_and_std, in_range, poisson_sigma
+from plot_functions import color_sequence
+from stats import compute_resolution_with_error 
+    
 
 
 
@@ -1271,3 +1274,143 @@ def gaussian_profiler_y_slices(counts, xedges, yedges, slices=10, min_counts=10)
             np.array(mean_errors),
             np.array(sigma_vals),
             np.array(sigma_errors))
+
+
+
+
+
+def response_in_sector(df, sector_angle, radial_bins_per_sector, radius=480, center=(0, 0), dpi=180):
+    """
+    Compute mean and sigma of response in polar sectors and radial bins.
+
+    Parameters:
+        df : pd.DataFrame
+            Input dataframe containing 'X', 'Y', and 'S2' (or relevant response column).
+        sector_angle : float
+            Angular width of each sector in degrees (e.g., 60 → 6 sectors).
+        radial_bins_per_sector : int
+            Number of radial divisions in each sector.
+        radius : float
+            Maximum radius of the circular region.
+        center : tuple
+            Center of the circle (default: (0, 0)).
+        dpi : int
+            Unused for now, just carried from original signature.
+
+    Returns:
+        results : np.ndarray
+            Shape (n_sectors, n_radial_bins, 4) with:
+            [mean, sigma, mean_error, sigma_error] for each sector and radial bin.
+        radial_centers : np.ndarray
+            Centers of radial bins.
+    """
+    
+    df_radial = df.copy()
+
+    # Convert to polar coordinates
+    df_radial['theta_rad'] = np.arctan2(df_radial['Y'] - center[1], df_radial['X'] - center[0])
+    df_radial['theta_deg'] = np.degrees(df_radial['theta_rad']) % 360
+    df_radial['slice'] = (df_radial['theta_deg'] // sector_angle).astype(int)
+    df_radial['R'] = np.sqrt((df_radial['X'] - center[0])**2 + (df_radial['Y'] - center[1])**2)
+
+    # Radial bins
+    radial_bins = np.linspace(0, radius, radial_bins_per_sector + 1)
+    df_radial['radial_bin'] = np.digitize(df_radial['R'], radial_bins) - 1
+    radial_centers = 0.5 * (radial_bins[:-1] + radial_bins[1:])
+    
+    assert 360 % sector_angle == 0, "sector_angle must divide 360 evenly"
+    n_sectors = 360 // sector_angle
+        
+    results = np.full((n_sectors, radial_bins_per_sector, 4), np.nan)
+
+    for sector_idx in range(n_sectors):
+        
+        bin_data = df_radial[
+            (df_radial['slice'] == sector_idx) 
+        ]
+
+        hist, xedges, yedges = np.histogram2d(
+            bin_data["R"], bin_data["Epes"],
+            bins=(100, 120),
+            range=[ (0,radius), (6000,10000) ]
+        )
+
+        r_centers, mean_vals, mean_errs, sigma_vals, sigma_errs = gaussian_profiler_y_slices(
+                hist, xedges, yedges, slices=radial_bins_per_sector
+        )
+
+        for radial_idx in range(len(r_centers)):  # or radial_bins_per_sector if all bins are filled
+            results[sector_idx, radial_idx] = [
+                mean_vals[radial_idx],
+                mean_errs[radial_idx],
+                sigma_vals[radial_idx],
+                sigma_errs[radial_idx]
+            ]
+        
+    return results, r_centers
+
+
+def plot_response_vs_radius_insector(r_centers, results, sector_angle,compute_resolution_with_error,color_sequence):
+    """
+    Plot Gaussian mean and resolution vs radius for each angular sector.
+
+    Parameters:
+        r_centers: 1D array
+            Centers of radial bins.
+        results: 3D array
+            Array of shape (n_sectors, n_radial_bins, 4): mean, sigma, mean_err, sigma_err.
+        sector_angle: int
+            Angular width of each sector in degrees.
+    """
+
+    n_sectors = 360 // sector_angle
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), dpi=120, sharex=True)
+
+    for slice_idx in range(n_sectors):
+        sector_data = results[slice_idx]
+
+        mean = sector_data[:, 0]
+        mean_err = sector_data[:, 1]
+        sigma = sector_data[:, 2]
+        sigma_err = sector_data[:, 3]
+
+        resolution, resolution_err = compute_resolution_with_error(sigma, sigma_err, mean, mean_err)
+
+        label = f'Slice {slice_idx*sector_angle}-{(slice_idx+1)*sector_angle}°'
+        color = color_sequence[slice_idx % len(color_sequence)]
+
+        ax1.errorbar(
+            r_centers,
+            mean,
+            yerr=mean_err,
+            fmt='o',
+            markersize=6,
+            color=color,
+            label=label
+        )
+
+        ax2.errorbar(
+            r_centers,
+            resolution,
+            yerr=resolution_err,
+            fmt='o',
+            markersize=6,
+            color=color,
+            label=label
+        )
+
+    ax1.set_ylabel('S2e (pes)')
+    ax1.set_xlabel("Radius (mm)")
+    ax1.legend(fontsize=10)
+    ax1.grid(True)
+    ax1.set_ylim(mean.mean() - 30, mean.mean() + 30)
+
+    ax2.set_ylabel('Energy Resolution (%, FWHM)')
+    ax2.set_xlabel("Radius (mm)")
+    ax2.legend(fontsize=10)
+    ax2.grid(True)
+    ax2.set_ylim(2, 8)
+
+    plt.tight_layout()
+    plt.show()
