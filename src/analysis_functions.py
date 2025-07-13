@@ -10,8 +10,12 @@ import warnings
 from typing import Callable, Union , Optional 
 from typing import Tuple, List
 from dataclasses import dataclass, field 
+from scipy.optimize import curve_fit
 
 from stats import mean_and_std, in_range, poisson_sigma
+from plot_functions import color_sequence
+from stats import compute_resolution_with_error 
+    
 
 
 
@@ -616,10 +620,85 @@ def fit_lifetime2(
 
     return const, lamda
 
+#Fit Lifetime with radius semection
+def fit_lifetime_Rsel(df : pd.DataFrame,
+                  nbins : int = 100,
+                  dtrange: List[float] = [50.0, 1350.0],
+                  s2range: List[float] = [6000, 10000],
+                  radius_selection : float = 250,
+                  slices_profile : int = 16
+                  ):
 
+    """
+    Analyzes S2e as a function of drift time (DT) to extract the electron lifetime
+    via an exponential decay fit.
+    
+    Parameters:
+    df : pd.DataFrame
+        Input DataFrame 
+    nbins : int, default=100
+        Number of bins for both axes in the 2D histogram.
+    dtrange : List[float], default=[50.0, 1350.0]
+        Drift time range 
+    s2range : List[float], default=[6000, 10000]
+        S2e range 
+    radius_selection : float, default=250
+        Maximum radial distance (in mm) to select events for the fit.
+    
+    Output:
+    - Displays a plot showing the 2D histogram of S2e vs DT, Gaussian profile points with error bars,
+      and the fitted exponential curve with fit parameters A and τ (electron lifetime) displayed in the legend.
+    - Return the lifetime with error
+    """
+    
+    # Define exponential function for the fit
+    def exp_decay(t, A, tau):
+        return A * np.exp(-t / tau)
+
+    # Compute 2D histogram
+    counts, xedges, yedges = np.histogram2d(
+        df[df['R'] < radius_selection]["DT"], df[df['R'] < radius_selection]["S2e"],
+        bins=(nbins,nbins),
+        range=(dtrange, s2range)
+    )
+    
+    # Recompute profiles for plotting
+    dt_centers, mean_vals, mean_errs, sigma, sigma_errs = gaussian_profiler_y_slices(counts, xedges, yedges, slices_profile)
+    
+    # Fit the exponential to the mean values
+    popt, pcov = curve_fit(exp_decay, dt_centers, mean_vals, p0=[8000,30000], sigma=mean_errs, absolute_sigma=True)
+    A_fit, tau_fit = popt
+    
+    # Evaluate fit
+    t_fit = np.linspace(dt_centers.min(), dt_centers.max(), 300)
+    y_fit = exp_decay(t_fit, *popt)
+    
+    # Plot
+    plt.figure(figsize=(10, 6), dpi=120)
+    plt.imshow(
+        counts.T,
+        extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]],
+        origin='lower',
+        aspect='auto',
+        cmap='viridis'
+    )
+    plt.errorbar(dt_centers, mean_vals, yerr=mean_errs, fmt='.', markersize=5, linewidth=1., color='w', label='Profiles')
+    plt.plot(t_fit, y_fit, 'r--', linewidth =1.2, label=f'Fit:A={A_fit:.1f}, τ={tau_fit/1000:.1f} ms')
+    
+    plt.colorbar(label='Counts')
+    plt.xlabel('Drift Time (µs)')
+    plt.ylabel('S2e (pes)')
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    perr = np.sqrt(np.diag(pcov))  # Standard errors
+    A_err, tau_err = perr
+
+    return tau_fit, tau_err
 
 ## gaussian
-
 
 def gauss_seed(x, y, sigma_rel=0.05):
     """
@@ -807,7 +886,7 @@ def fit_Epes_vs_R(
 
 ## aux
 
-def plot_fit_energy(fc : FitCollection):
+def plot_fit_energy(fc : FitCollection, label = None):
 
     if fc.fr.valid:
         par  = fc.fr.par
@@ -825,9 +904,9 @@ def plot_fit_energy(fc : FitCollection):
                              histtype='step',
                              edgecolor='black',
                              linewidth=1.5,
-                             label=stat)
+                             label=label)
 
-        plt.plot(fc.fp.x, fc.fp.f(fc.fp.x), "r-", lw=2)
+        plt.plot(fc.fp.x, fc.fp.f(fc.fp.x), "r-",  linewidth=1.5, label=stat)
         plt.legend()
         
     else:
@@ -1129,3 +1208,284 @@ def chi2(f : FitFunction,
         Reduced chi-squared statistic of the fit.
     """
     return chi2f(f.fn, len(f.values), x, y, sy)
+
+
+def gaussian(y, A, mu, sigma):
+    return A * np.exp(-(y - mu)**2 / (2 * sigma**2))
+    
+
+
+def gaussian_profiler_y(counts, xedges, yedges, min_counts=10):
+    
+    """
+    Extracts the Gaussian mean and its uncertainty from vertical slices of a 2D histogram.
+
+    Parameters:
+    -----------
+    counts : 2D np.ndarray
+        The 2D histogram array of counts, typically from `np.histogram2d`.
+    xedges : 1D np.ndarray
+        Bin edges along the x-axis (e.g., DT).
+    yedges : 1D np.ndarray
+        Bin edges along the y-axis (e.g., Zrms).
+    min_counts : int, optional (default=10)
+        Minimum total counts required in a vertical slice for a fit to be attempted.
+
+    Returns:
+    --------
+    dt_centers : np.ndarray
+        The x-axis (DT) bin centers where a valid Gaussian fit was performed.
+    mean_values : np.ndarray
+        The Gaussian mean (μ) extracted from each vertical slice.
+    mean_errors : np.ndarray
+        The estimated statistical error on the fitted μ, derived from the fit covariance matrix..
+    sigmas : np.ndarray
+    The Gaussian width (σ) extracted from each vertical slice.
+
+    sigma_errors : np.ndarray
+    The estimated error on the fitted σ, derived from the fit covariance matrix.
+    """
+
+    # Bin centers
+    xcenters = (xedges[:-1] + xedges[1:]) / 2
+    ycenters = (yedges[:-1] + yedges[1:]) / 2
+
+    mean_values = []
+    mean_errors = []
+    sigma_vals = []
+    sigma_errors = []
+    dt_centers = []
+
+    for i in range(len(xcenters)):
+        profile = counts[i, :]
+        if np.sum(profile) < min_counts or np.all(profile == 0):
+            continue
+
+        try:
+            popt, pcov = curve_fit(gaussian, ycenters, profile, p0=gauss_seed(ycenters,profile))
+            _, mu_fit, sigma_fit = popt
+            mu_err = np.sqrt(pcov[2, 2])
+            sigma_err = np.sqrt(pcov[2, 2]) 
+            
+            dt_centers.append(xcenters[i])
+            mean_values.append(mu_fit)
+            mean_errors.append(mu_err)  # error on mean
+            sigma_vals.append(sigma_fit)
+            sigma_errors.append(sigma_err)
+            
+        except RuntimeError:
+            continue
+
+    return np.array(dt_centers), np.array(mean_values), np.array(mean_errors), np.array(sigma_vals), np.array(sigma_errors) 
+
+
+
+#Reimplementation with slice numbers 
+def gaussian_profiler_y_slices(counts, xedges, yedges, slices=10, min_counts=10):
+    """
+    Fit vertical slices of a 2D histogram with Gaussians along y-axis.
+
+    Parameters:
+        counts : 2D array
+            The 2D histogram counts.
+        xedges, yedges : arrays
+            Bin edges along x and y axes.
+        slices : int or array-like
+            Number of vertical slices or explicit x bin edges.
+        min_counts : int
+            Minimum counts in a slice to attempt a fit.
+
+    Returns:
+        dt_centers, mean_values, mean_errors, sigma_vals, sigma_errors
+    """
+
+    ycenters = (yedges[:-1] + yedges[1:]) / 2
+
+    # Determine slicing
+    if isinstance(slices, int):
+        # Uniform slicing over full x-range
+        custom_xedges = np.linspace(xedges[0], xedges[-1], slices + 1)
+    else:
+        # Use custom array of bin edges
+        custom_xedges = np.asarray(slices)
+
+    dt_centers = []
+    mean_values = []
+    mean_errors = []
+    sigma_vals = []
+    sigma_errors = []
+
+    for i in range(len(custom_xedges) - 1):
+        xlow, xhigh = custom_xedges[i], custom_xedges[i + 1]
+        # Find histogram bins overlapping this range
+        xmask = (xedges[:-1] >= xlow) & (xedges[1:] <= xhigh)
+        if not np.any(xmask):
+            continue
+
+        # Average counts over selected bins along x
+        profile = np.mean(counts[xmask, :], axis=0)
+
+        if np.sum(profile) < min_counts or np.all(profile == 0):
+            continue
+
+        try:
+            popt, pcov = curve_fit(gaussian, ycenters, profile, p0=gauss_seed(ycenters, profile))
+            _, mu_fit, sigma_fit = popt
+            mu_err = np.sqrt(np.diag(pcov))[1] if pcov.shape == (3, 3) else np.nan
+            sigma_err = np.sqrt(np.diag(pcov))[2] if pcov.shape == (3, 3) else np.nan
+
+            center = 0.5 * (xlow + xhigh)
+            dt_centers.append(center)
+            mean_values.append(mu_fit)
+            mean_errors.append(mu_err)
+            sigma_vals.append(sigma_fit)
+            sigma_errors.append(sigma_err)
+            
+        except RuntimeError:
+            continue
+
+    return (np.array(dt_centers),
+            np.array(mean_values),
+            np.array(mean_errors),
+            np.array(sigma_vals),
+            np.array(sigma_errors))
+
+
+
+
+
+def response_in_sector(df, sector_angle, radial_bins_per_sector, radius=480, center=(0, 0), dpi=180):
+    """
+    Compute mean and sigma of response in polar sectors and radial bins.
+
+    Parameters:
+        df : pd.DataFrame
+            Input dataframe containing 'X', 'Y', and 'S2' (or relevant response column).
+        sector_angle : float
+            Angular width of each sector in degrees (e.g., 60 → 6 sectors).
+        radial_bins_per_sector : int
+            Number of radial divisions in each sector.
+        radius : float
+            Maximum radius of the circular region.
+        center : tuple
+            Center of the circle (default: (0, 0)).
+        dpi : int
+            Unused for now, just carried from original signature.
+
+    Returns:
+        results : np.ndarray
+            Shape (n_sectors, n_radial_bins, 4) with:
+            [mean, sigma, mean_error, sigma_error] for each sector and radial bin.
+        radial_centers : np.ndarray
+            Centers of radial bins.
+    """
+    
+    df_radial = df.copy()
+
+    # Convert to polar coordinates
+    df_radial['theta_rad'] = np.arctan2(df_radial['Y'] - center[1], df_radial['X'] - center[0])
+    df_radial['theta_deg'] = np.degrees(df_radial['theta_rad']) % 360
+    df_radial['slice'] = (df_radial['theta_deg'] // sector_angle).astype(int)
+    df_radial['R'] = np.sqrt((df_radial['X'] - center[0])**2 + (df_radial['Y'] - center[1])**2)
+
+    # Radial bins
+    radial_bins = np.linspace(0, radius, radial_bins_per_sector + 1)
+    df_radial['radial_bin'] = np.digitize(df_radial['R'], radial_bins) - 1
+    radial_centers = 0.5 * (radial_bins[:-1] + radial_bins[1:])
+    
+    assert 360 % sector_angle == 0, "sector_angle must divide 360 evenly"
+    n_sectors = 360 // sector_angle
+        
+    results = np.full((n_sectors, radial_bins_per_sector, 4), np.nan)
+
+    for sector_idx in range(n_sectors):
+        
+        bin_data = df_radial[
+            (df_radial['slice'] == sector_idx) 
+        ]
+
+        hist, xedges, yedges = np.histogram2d(
+            bin_data["R"], bin_data["Epes"],
+            bins=(100, 120),
+            range=[ (0,radius), (6000,10000) ]
+        )
+
+        r_centers, mean_vals, mean_errs, sigma_vals, sigma_errs = gaussian_profiler_y_slices(
+                hist, xedges, yedges, slices=radial_bins_per_sector
+        )
+
+        for radial_idx in range(len(r_centers)):  # or radial_bins_per_sector if all bins are filled
+            results[sector_idx, radial_idx] = [
+                mean_vals[radial_idx],
+                mean_errs[radial_idx],
+                sigma_vals[radial_idx],
+                sigma_errs[radial_idx]
+            ]
+        
+    return results, r_centers
+
+
+def plot_response_vs_radius_insector(r_centers, results, sector_angle,compute_resolution_with_error,color_sequence):
+    """
+    Plot Gaussian mean and resolution vs radius for each angular sector.
+
+    Parameters:
+        r_centers: 1D array
+            Centers of radial bins.
+        results: 3D array
+            Array of shape (n_sectors, n_radial_bins, 4): mean, sigma, mean_err, sigma_err.
+        sector_angle: int
+            Angular width of each sector in degrees.
+    """
+
+    n_sectors = 360 // sector_angle
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), dpi=120, sharex=True)
+
+    for slice_idx in range(n_sectors):
+        sector_data = results[slice_idx]
+
+        mean = sector_data[:, 0]
+        mean_err = sector_data[:, 1]
+        sigma = sector_data[:, 2]
+        sigma_err = sector_data[:, 3]
+
+        resolution, resolution_err = compute_resolution_with_error(sigma, sigma_err, mean, mean_err)
+
+        label = f'Slice {slice_idx*sector_angle}-{(slice_idx+1)*sector_angle}°'
+        color = color_sequence[slice_idx % len(color_sequence)]
+
+        ax1.errorbar(
+            r_centers,
+            mean,
+            yerr=mean_err,
+            fmt='o',
+            markersize=6,
+            color=color,
+            label=label
+        )
+
+        ax2.errorbar(
+            r_centers,
+            resolution,
+            yerr=resolution_err,
+            fmt='o',
+            markersize=6,
+            color=color,
+            label=label
+        )
+
+    ax1.set_ylabel('S2e (pes)')
+    ax1.set_xlabel("Radius (mm)")
+    ax1.legend(fontsize=10)
+    ax1.grid(True)
+    ax1.set_ylim(mean.mean() - 30, mean.mean() + 30)
+
+    ax2.set_ylabel('Energy Resolution (%, FWHM)')
+    ax2.set_xlabel("Radius (mm)")
+    ax2.legend(fontsize=10)
+    ax2.grid(True)
+    ax2.set_ylim(2, 8)
+
+    plt.tight_layout()
+    plt.show()
