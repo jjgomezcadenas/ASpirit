@@ -620,10 +620,85 @@ def fit_lifetime2(
 
     return const, lamda
 
+#Fit Lifetime with radius semection
+def fit_lifetime_Rsel(df : pd.DataFrame,
+                  nbins : int = 100,
+                  dtrange: List[float] = [50.0, 1350.0],
+                  s2range: List[float] = [6000, 10000],
+                  radius_selection : float = 250,
+                  slices_profile : int = 16
+                  ):
 
+    """
+    Analyzes S2e as a function of drift time (DT) to extract the electron lifetime
+    via an exponential decay fit.
+    
+    Parameters:
+    df : pd.DataFrame
+        Input DataFrame 
+    nbins : int, default=100
+        Number of bins for both axes in the 2D histogram.
+    dtrange : List[float], default=[50.0, 1350.0]
+        Drift time range 
+    s2range : List[float], default=[6000, 10000]
+        S2e range 
+    radius_selection : float, default=250
+        Maximum radial distance (in mm) to select events for the fit.
+    
+    Output:
+    - Displays a plot showing the 2D histogram of S2e vs DT, Gaussian profile points with error bars,
+      and the fitted exponential curve with fit parameters A and τ (electron lifetime) displayed in the legend.
+    - Return the lifetime with error
+    """
+    
+    # Define exponential function for the fit
+    def exp_decay(t, A, tau):
+        return A * np.exp(-t / tau)
+
+    # Compute 2D histogram
+    counts, xedges, yedges = np.histogram2d(
+        df[df['R'] < radius_selection]["DT"], df[df['R'] < radius_selection]["S2e"],
+        bins=(nbins,nbins),
+        range=(dtrange, s2range)
+    )
+    
+    # Recompute profiles for plotting
+    dt_centers, mean_vals, mean_errs, sigma, sigma_errs = gaussian_profiler_y_slices(counts, xedges, yedges, slices_profile)
+    
+    # Fit the exponential to the mean values
+    popt, pcov = curve_fit(exp_decay, dt_centers, mean_vals, p0=[8000,30000], sigma=mean_errs, absolute_sigma=True)
+    A_fit, tau_fit = popt
+    
+    # Evaluate fit
+    t_fit = np.linspace(dt_centers.min(), dt_centers.max(), 300)
+    y_fit = exp_decay(t_fit, *popt)
+    
+    # Plot
+    plt.figure(figsize=(10, 6), dpi=120)
+    plt.imshow(
+        counts.T,
+        extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]],
+        origin='lower',
+        aspect='auto',
+        cmap='viridis'
+    )
+    plt.errorbar(dt_centers, mean_vals, yerr=mean_errs, fmt='.', markersize=5, linewidth=1., color='w', label='Profiles')
+    plt.plot(t_fit, y_fit, 'r--', linewidth =1.2, label=f'Fit:A={A_fit:.1f}, τ={tau_fit/1000:.1f} ms')
+    
+    plt.colorbar(label='Counts')
+    plt.xlabel('Drift Time (µs)')
+    plt.ylabel('S2e (pes)')
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    perr = np.sqrt(np.diag(pcov))  # Standard errors
+    A_err, tau_err = perr
+
+    return tau_fit, tau_err
 
 ## gaussian
-
 
 def gauss_seed(x, y, sigma_rel=0.05):
     """
