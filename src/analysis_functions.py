@@ -1489,3 +1489,30 @@ def plot_response_vs_radius_insector(r_centers, results, sector_angle,compute_re
 
     plt.tight_layout()
     plt.show()
+
+
+
+def save_kr_map(mappar: MapPar, filename: str):
+    np.savez_compressed(
+        filename,
+        hratio=mappar.hratio,
+        hcounts=mappar.hcounts,
+        xedges=mappar.xedges,
+        yedges=mappar.yedges,
+        zedges=mappar.zedges,
+        hmap=mappar.hmap if mappar.hmap is not None else np.array([])
+    )
+
+def load_kr_map(filename: str) -> MapPar:
+    data = np.load(filename)
+    hmap_loaded = data['hmap']
+    return MapPar(
+        hratio=data['hratio'],
+        hcounts=data['hcounts'],
+        xedges=data['xedges'],
+        yedges=data['yedges'],
+        zedges=data['zedges'],
+        hmap=hmap_loaded if hmap_loaded.size > 0 else None
+    )
+
+
