@@ -78,7 +78,7 @@ class MapPar:
     yedges: np.ndarray
     zedges: np.ndarray
     hmap: Optional[np.ndarray] = field(default=None)
-
+    norm_val: Optional[float] = field(default=None)
 
 
 ### profiles
@@ -309,6 +309,37 @@ def road_r_s2e(
 
 #maos
 
+
+def map3d_norm(map3d, xedges, yedges, radius=50.0):
+    """
+    Compute the mean value in a circular region of radius `radius` (in mm)
+    centered at (0, 0) in the XY plane for the first Z-slice of the 3D map.
+
+    Parameters:
+        map3d (ndarray): 3D array of shape (Nx, Ny, Nz)
+        xedges (ndarray): 1D array of bin edges along X
+        yedges (ndarray): 1D array of bin edges along Y
+        radius (float): Radius around (0, 0) in mm
+
+    Returns:
+        float: Mean value within the circular region
+    """
+    slice_xy = map3d[:, :, 0]
+
+    x_centers = 0.5 * (xedges[:-1] + xedges[1:])
+    y_centers = 0.5 * (yedges[:-1] + yedges[1:])
+    X, Y = np.meshgrid(x_centers, y_centers, indexing='ij')
+
+    R = np.sqrt(X**2 + Y**2)
+    mask = R <= radius
+
+    values = slice_xy[mask]
+    values = values[~np.isnan(values)]
+
+    return np.mean(values) if values.size > 0 else np.nan
+
+
+
 def compute_map3D(df: pd.DataFrame, bins_xy: int=100, 
                   z_bins=Optional[List[float]], 
                   xmin: float =-480.0, xmax: float =480.0)->MapPar:
@@ -330,10 +361,15 @@ def compute_map3D(df: pd.DataFrame, bins_xy: int=100,
 
     Returns
     -------
+    a MapPar() with
     hist_ratio : np.ndarray
         3D histogram of mean S2e values.
+    hist_counts : np.ndarray
+        3D histogram of counts values in bins.
     edges_x, edges_y, edges_z : np.ndarray
         Bin edges for X, Y, Z.
+    hmap : np.ndarray
+        3D histogram with the correction values normalized with map3d_norm() ->Return the average in the fist z slice in a radius of 50 mm.
     """
     if z_bins is None:
         zmin = df['DT'].min()
@@ -355,8 +391,13 @@ def compute_map3D(df: pd.DataFrame, bins_xy: int=100,
     )
 
     hist_ratio = np.divide(hist_S2e, hist_counts, where=hist_counts != 0)
+
+    norm_factor = map3d_norm(hist_ratio,edges_x,edges_y)
+
+    hmap = np.divide(hist_ratio, norm_factor, where=hist_counts > 2)
+    
     return MapPar(hratio=hist_ratio, hcounts=hist_counts, 
-                  xedges=edges_x, yedges=edges_y, zedges=edges_z)
+                  xedges=edges_x, yedges=edges_y, zedges=edges_z, hmap=hmap, norm_val=norm_factor )
 
 
 def correct_S2e(
@@ -680,7 +721,7 @@ def fit_lifetime_Rsel(df : pd.DataFrame,
         extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]],
         origin='lower',
         aspect='auto',
-        cmap='viridis'
+        cmap='jet'
     )
     plt.errorbar(dt_centers, mean_vals, yerr=mean_errs, fmt='.', markersize=5, linewidth=1., color='w', label='Profiles')
     plt.plot(t_fit, y_fit, 'r--', linewidth =1.2, label=f'Fit:A={A_fit:.1f}, τ={tau_fit/1000:.1f} ms')
@@ -1075,7 +1116,7 @@ def plot_3d_histogram_slices(
     zedges: np.ndarray,
     z_indices: list,
     figsize: tuple = (4, 4),
-    cmap: str = "viridis"
+    cmap: str = "jet"
 ):
     """
     Plot 2D X-Y histograms from slices of a 3D histogram H along Z-axis.
@@ -1342,7 +1383,13 @@ def gaussian_profiler_y_slices(counts, xedges, yedges, slices=10, min_counts=10)
             sigma_errors.append(sigma_err)
             
         except RuntimeError:
+            dt_centers.append(np.nan)
+            mean_values.append(np.nan)
+            mean_errors.append(np.nan)
+            sigma_vals.append(np.nan)
+            sigma_errors.append(np.nan)
             continue
+        
 
     return (np.array(dt_centers),
             np.array(mean_values),
