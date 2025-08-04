@@ -11,11 +11,38 @@ import analysis_functions as af
 
 
 
+def remove_scatter_and_reweight(df: pd.DataFrame) -> pd.DataFrame:
+
+    # Compute Eslice for each (event, Z)
+    eslice = df.groupby(['event', 'Z'])['E'].sum().rename("Eslice")
+    df = df.merge(eslice, on=['event', 'Z'])
+
+    # Mask for signal rows (cluster >= 0)
+    signal_mask = df['cluster'] >= 0
+
+    # Compute Qsum for signal rows grouped by (event, Z)
+    qsum = df[signal_mask].groupby(['event', 'Z'])['Q'].sum().rename("Qsum")
+
+    # Merge Qsum back to original DataFrame; use left join to preserve all rows
+    df = df.merge(qsum, on=['event', 'Z'], how='left')
+
+    # Compute Erw only for signal rows
+    df['Erw'] = np.where(
+        signal_mask,
+        df['Eslice'] * df['Q'] / df['Qsum'],
+        np.nan
+    )
+
+    df = df.drop(columns=['Eslice', 'Qsum'])      
+    return df
+
+
 def correct_Hits(
     df: pd.DataFrame,
     krmap: MapPar,
     rmax: float = 480.0,
-    zmax: float = 1350.0
+    zmax: float = 1350.0,
+    var: str = 'E'
 ) -> pd.DataFrame:
     """
     Apply position-based E correction using a 3D histogram map, safely guarding against divide-by-zero.
@@ -40,7 +67,7 @@ def correct_Hits(
     x_vals = df['X'].to_numpy()
     y_vals = df['Y'].to_numpy()
     z_vals = df['Z'].to_numpy()
-    ene_vals = df['E'].to_numpy()
+    ene_vals = df[var].to_numpy()
 
     x_bins = np.digitize(x_vals, krmap.xedges) - 1
     y_bins = np.digitize(y_vals, krmap.yedges) - 1
@@ -122,39 +149,40 @@ def clusterize_hits(df_pe_peak: pd.DataFrame, eps=2.3, npt=5)-> pd.DataFrame:
 
 
 def compute_cluster_stats(df: pd.DataFrame)-> pd.DataFrame:
-    """
-    Compute cluster-level statistics per event from the hit dataframe.
 
-    Returns a DataFrame with:
-    - event, cluster
-    - mean, min, max for X, Y, Z
-    - sums of Q, E, Ec
-    - Z span (Z_max - Z_min)
-    """
+    slice_cluster_stats=[]
+    
+    for ev, df_ev in df.groupby('event'):
+        z_bounds = df_ev.groupby('cluster')['Z'].agg(['min', 'max'])
+        z_bounds['min'] -= 1
+        z_bounds['max'] += 1
+        z_slices = np.sort(np.unique(np.concatenate([z_bounds['min'].values, z_bounds['max'].values])))
+        
+        for i in range(len(z_slices) - 1):
+            z_low = z_slices[i]
+            z_high = z_slices[i + 1]
+            slice_df = df_ev[(df_ev['Z'] >= z_low) & (df_ev['Z'] <= z_high)]
+            
+            for cluster_id, sub_df in slice_df.groupby('cluster'):
+                
+                stats = {
+                    'event': ev,
+                    'Z_min': z_low,
+                    'Z_max': z_high,
+                    'cluster': cluster_id,
+                    'Ec_sum': sub_df['Ec'].sum(),
+                    'X_mean': df_ev[df_ev['cluster'] == cluster_id]['X'].mean(),
+                    'X_min': df_ev[df_ev['cluster'] == cluster_id]['X'].min(),
+                    'X_max': df_ev[df_ev['cluster'] == cluster_id]['X'].max(),
+                    'Y_mean': df_ev[df_ev['cluster'] == cluster_id]['Y'].mean(),
+                    'Y_min': df_ev[df_ev['cluster'] == cluster_id]['Y'].min(),
+                    'Y_max': df_ev[df_ev['cluster'] == cluster_id]['Y'].max()
+                }
+                slice_cluster_stats.append(stats)
 
-    grouped = df.groupby(['event', 'cluster'])
+    df_slices_clustered = pd.DataFrame(slice_cluster_stats)
 
-    cluster_stats = grouped.agg({
-        'X': ['mean', 'min', 'max'],
-        'Y': ['mean', 'min', 'max'],
-        'Z': ['mean', 'min', 'max'],
-        'Q': 'sum',
-        'E': 'sum',
-        'Ec': 'sum'
-    })
-
-    # Flatten MultiIndex columns
-    cluster_stats.columns = [
-        'X_mean', 'X_min', 'X_max',
-        'Y_mean', 'Y_min', 'Y_max',
-        'Z_mean', 'Z_min', 'Z_max',
-        'Q_sum', 'E_sum', 'Ec_sum'
-    ]
-
-    cluster_stats = cluster_stats.reset_index()
-
-    return cluster_stats
-
+    return df_slices_clustered
 
 def preprocess_df_hits(folderlist: [str],
                        ev_list: [int],
